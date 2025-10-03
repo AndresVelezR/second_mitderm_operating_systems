@@ -249,6 +249,556 @@ void ajustarBrilloConcurrente(ImagenInfo* info, int delta) {
            info->canales == 1 ? "grises" : "RGB");
 }
 
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+// ============================================================================
+// FUNCIÓN 1: CONVOLUCIÓN GAUSSIANA
+// ============================================================================
+
+// QUÉ: Generar kernel Gaussiano usando la fórmula matemática.
+// CÓMO: Calcula G(x,y) = (1/(2πσ²))·exp(-(x²+y²)/(2σ²)) para cada posición.
+// POR QUÉ: El kernel Gaussiano suaviza la imagen ponderando por distancia al centro.
+float** generarKernelGaussiano(int tamKernel, float sigma, float* suma) {
+    if (tamKernel % 2 == 0 || tamKernel < 3) {
+        fprintf(stderr, "Error: tamKernel debe ser impar y >= 3\n");
+        return NULL;
+    }
+
+    // QUÉ: Asignar memoria para kernel 2D.
+    // CÓMO: Asigna filas y luego columnas para matriz tamKernel x tamKernel.
+    // POR QUÉ: Necesitamos una matriz flotante para precisión en cálculos.
+    float** kernel = (float**)malloc(tamKernel * sizeof(float*));
+    if (!kernel) {
+        fprintf(stderr, "Error de memoria al asignar kernel\n");
+        return NULL;
+    }
+    for (int i = 0; i < tamKernel; i++) {
+        kernel[i] = (float*)malloc(tamKernel * sizeof(float));
+        if (!kernel[i]) {
+            fprintf(stderr, "Error de memoria al asignar fila de kernel\n");
+            for (int j = 0; j < i; j++) {
+                free(kernel[j]);
+            }
+            free(kernel);
+            return NULL;
+        }
+    }
+
+    // QUÉ: Calcular valores del kernel Gaussiano.
+    // CÓMO: Usa fórmula G(x,y) = exp(-(x²+y²)/(2σ²)) y normaliza después.
+    // POR QUÉ: El kernel debe estar centrado y normalizado para preservar brillo.
+    int centro = tamKernel / 2;
+    *suma = 0.0f;
+    float sigmaDosCuadrado = 2.0f * sigma * sigma;
+
+    for (int y = 0; y < tamKernel; y++) {
+        for (int x = 0; x < tamKernel; x++) {
+            int dx = x - centro;
+            int dy = y - centro;
+            float valor = expf(-(dx * dx + dy * dy) / sigmaDosCuadrado);
+            kernel[y][x] = valor;
+            *suma += valor;
+        }
+    }
+
+    // QUÉ: Normalizar el kernel para que la suma sea 1.
+    // CÓMO: Divide cada elemento por la suma total.
+    // POR QUÉ: Garantiza que el brillo promedio de la imagen no cambie.
+    if (*suma > 0.0f) {
+        for (int y = 0; y < tamKernel; y++) {
+            for (int x = 0; x < tamKernel; x++) {
+                kernel[y][x] /= *suma;
+            }
+        }
+    }
+
+    return kernel;
+}
+
+// QUÉ: Liberar memoria del kernel.
+// CÓMO: Libera cada fila y luego el arreglo de filas.
+// POR QUÉ: Evita fugas de memoria.
+void liberarKernel(float** kernel, int tamKernel) {
+    if (kernel) {
+        for (int i = 0; i < tamKernel; i++) {
+            free(kernel[i]);
+        }
+        free(kernel);
+    }
+}
+
+// QUÉ: Estructura para pasar datos al hilo de convolución.
+// CÓMO: Contiene imagen original, resultado, kernel, rangos y dimensiones.
+// POR QUÉ: Los hilos necesitan acceso a datos compartidos y su rango de trabajo.
+typedef struct {
+    unsigned char*** pixelesOrigen;
+    unsigned char*** pixelesDestino;
+    float** kernel;
+    int tamKernel;
+    int inicio;
+    int fin;
+    int ancho;
+    int alto;
+    int canales;
+} ConvolucionArgs;
+
+// QUÉ: Aplicar convolución en un rango de filas (para hilos).
+// CÓMO: Para cada píxel en el rango, multiplica vecinos por kernel y suma.
+// POR QUÉ: Permite paralelizar la operación dividiendo filas entre hilos.
+void* aplicarConvolucionHilo(void* args) {
+    ConvolucionArgs* cArgs = (ConvolucionArgs*)args;
+    int radio = cArgs->tamKernel / 2;
+
+    for (int y = cArgs->inicio; y < cArgs->fin; y++) {
+        for (int x = 0; x < cArgs->ancho; x++) {
+            for (int c = 0; c < cArgs->canales; c++) {
+                float suma = 0.0f;
+
+                // QUÉ: Aplicar kernel con manejo de bordes.
+                // CÓMO: Para cada posición del kernel, accede al píxel correspondiente.
+                // POR QUÉ: La convolución requiere vecindario completo de cada píxel.
+                for (int ky = 0; ky < cArgs->tamKernel; ky++) {
+                    for (int kx = 0; kx < cArgs->tamKernel; kx++) {
+                        int iy = y + ky - radio;
+                        int ix = x + kx - radio;
+
+                        // QUÉ: Manejo de bordes con replicación.
+                        // CÓMO: Si el índice sale de límites, usa el píxel del borde.
+                        // POR QUÉ: Evita accesos fuera de memoria y produce bordes naturales.
+                        if (iy < 0) iy = 0;
+                        if (iy >= cArgs->alto) iy = cArgs->alto - 1;
+                        if (ix < 0) ix = 0;
+                        if (ix >= cArgs->ancho) ix = cArgs->ancho - 1;
+
+                        suma += cArgs->pixelesOrigen[iy][ix][c] * cArgs->kernel[ky][kx];
+                    }
+                }
+
+                // QUÉ: Clamp resultado a [0, 255] y guardar.
+                // CÓMO: Limita el valor y convierte a unsigned char.
+                // POR QUÉ: Los píxeles deben estar en rango válido de 8 bits.
+                int valor = (int)(suma + 0.5f); // Redondeo
+                if (valor < 0) valor = 0;
+                if (valor > 255) valor = 255;
+                cArgs->pixelesDestino[y][x][c] = (unsigned char)valor;
+            }
+        }
+    }
+    return NULL;
+}
+
+// QUÉ: Aplicar filtro Gaussiano a la imagen usando convolución concurrente.
+// CÓMO: Genera kernel, crea matriz destino, divide trabajo entre hilos.
+// POR QUÉ: Paraleliza el procesamiento para acelerar la operación costosa.
+int aplicarConvolucionGaussiana(ImagenInfo* info, int tamKernel, float sigma) {
+    if (!info->pixeles) {
+        fprintf(stderr, "No hay imagen cargada.\n");
+        return 0;
+    }
+    if (tamKernel % 2 == 0 || tamKernel < 3 || tamKernel > 15) {
+        fprintf(stderr, "Error: tamKernel debe ser impar, entre 3 y 15\n");
+        return 0;
+    }
+    if (sigma <= 0.0f) {
+        fprintf(stderr, "Error: sigma debe ser > 0\n");
+        return 0;
+    }
+
+    // QUÉ: Generar kernel Gaussiano.
+    float sumaKernel;
+    float** kernel = generarKernelGaussiano(tamKernel, sigma, &sumaKernel);
+    if (!kernel) {
+        return 0;
+    }
+
+    // QUÉ: Crear matriz de destino para resultado.
+    // CÓMO: Asigna nueva matriz 3D con mismas dimensiones que original.
+    // POR QUÉ: No podemos modificar la imagen original mientras la leemos.
+    unsigned char*** pixelesNuevos = (unsigned char***)malloc(info->alto * sizeof(unsigned char**));
+    if (!pixelesNuevos) {
+        fprintf(stderr, "Error de memoria al asignar imagen destino\n");
+        liberarKernel(kernel, tamKernel);
+        return 0;
+    }
+
+    int memoriaOk = 1;
+    for (int y = 0; y < info->alto && memoriaOk; y++) {
+        pixelesNuevos[y] = (unsigned char**)malloc(info->ancho * sizeof(unsigned char*));
+        if (!pixelesNuevos[y]) {
+            memoriaOk = 0;
+            fprintf(stderr, "Error de memoria al asignar columnas destino\n");
+            // Liberar lo ya asignado
+            for (int yy = 0; yy < y; yy++) {
+                for (int x = 0; x < info->ancho; x++) {
+                    free(pixelesNuevos[yy][x]);
+                }
+                free(pixelesNuevos[yy]);
+            }
+            free(pixelesNuevos);
+            liberarKernel(kernel, tamKernel);
+            return 0;
+        }
+
+        for (int x = 0; x < info->ancho && memoriaOk; x++) {
+            pixelesNuevos[y][x] = (unsigned char*)malloc(info->canales * sizeof(unsigned char));
+            if (!pixelesNuevos[y][x]) {
+                memoriaOk = 0;
+                fprintf(stderr, "Error de memoria al asignar canales destino\n");
+                // Liberar lo ya asignado
+                for (int xx = 0; xx < x; xx++) {
+                    free(pixelesNuevos[y][xx]);
+                }
+                for (int yy = 0; yy < y; yy++) {
+                    for (int xx = 0; xx < info->ancho; xx++) {
+                        free(pixelesNuevos[yy][xx]);
+                    }
+                    free(pixelesNuevos[yy]);
+                }
+                free(pixelesNuevos[y]);
+                free(pixelesNuevos);
+                liberarKernel(kernel, tamKernel);
+                return 0;
+            }
+        }
+    }
+
+    // QUÉ: Configurar y lanzar hilos para convolución.
+    // CÓMO: Divide filas entre hilos, pasa argumentos y sincroniza.
+    // POR QUÉ: Paraleliza el procesamiento para mayor velocidad.
+    const int numHilos = 4; // Usar 4 hilos para mejor rendimiento
+    pthread_t hilos[numHilos];
+    ConvolucionArgs args[numHilos];
+    int filasPorHilo = (int)ceil((double)info->alto / numHilos);
+
+    for (int i = 0; i < numHilos; i++) {
+        args[i].pixelesOrigen = info->pixeles;
+        args[i].pixelesDestino = pixelesNuevos;
+        args[i].kernel = kernel;
+        args[i].tamKernel = tamKernel;
+        args[i].inicio = i * filasPorHilo;
+        args[i].fin = ((i + 1) * filasPorHilo < info->alto) ? (i + 1) * filasPorHilo : info->alto;
+        args[i].ancho = info->ancho;
+        args[i].alto = info->alto;
+        args[i].canales = info->canales;
+
+        if (pthread_create(&hilos[i], NULL, aplicarConvolucionHilo, &args[i]) != 0) {
+            fprintf(stderr, "Error al crear hilo %d\n", i);
+            // Esperar hilos ya creados
+            for (int j = 0; j < i; j++) {
+                pthread_join(hilos[j], NULL);
+            }
+            // Liberar memoria
+            for (int y = 0; y < info->alto; y++) {
+                for (int x = 0; x < info->ancho; x++) {
+                    free(pixelesNuevos[y][x]);
+                }
+                free(pixelesNuevos[y]);
+            }
+            free(pixelesNuevos);
+            liberarKernel(kernel, tamKernel);
+            return 0;
+        }
+    }
+
+    // QUÉ: Esperar a que todos los hilos terminen.
+    for (int i = 0; i < numHilos; i++) {
+        pthread_join(hilos[i], NULL);
+    }
+
+    // QUÉ: Reemplazar imagen original con resultado.
+    // CÓMO: Libera matriz antigua y asigna la nueva.
+    // POR QUÉ: Actualiza la imagen en memoria con el resultado del filtro.
+    for (int y = 0; y < info->alto; y++) {
+        for (int x = 0; x < info->ancho; x++) {
+            free(info->pixeles[y][x]);
+        }
+        free(info->pixeles[y]);
+    }
+    free(info->pixeles);
+    info->pixeles = pixelesNuevos;
+
+    liberarKernel(kernel, tamKernel);
+    printf("Convolución Gaussiana aplicada (kernel=%dx%d, sigma=%.2f, %d hilos).\n",
+           tamKernel, tamKernel, sigma, numHilos);
+    return 1;
+}
+
+// ============================================================================
+// FUNCIÓN 2: DETECCIÓN DE BORDES CON SOBEL
+// ============================================================================
+
+// QUÉ: Convertir imagen RGB a escala de grises.
+// CÓMO: Usa ponderación perceptual (0.299R + 0.587G + 0.114B).
+// POR QUÉ: Sobel requiere imagen de un solo canal para calcular gradientes.
+int convertirAGrayscale(ImagenInfo* info) {
+    if (!info->pixeles) {
+        fprintf(stderr, "No hay imagen cargada.\n");
+        return 0;
+    }
+    if (info->canales == 1) {
+        printf("La imagen ya está en escala de grises.\n");
+        return 1; // Ya es grayscale
+    }
+    if (info->canales != 3) {
+        fprintf(stderr, "Error: formato de imagen no soportado (canales=%d).\n", info->canales);
+        return 0;
+    }
+
+    // QUÉ: Crear nueva matriz para grayscale (1 canal).
+    unsigned char*** pixelesGray = (unsigned char***)malloc(info->alto * sizeof(unsigned char**));
+    if (!pixelesGray) {
+        fprintf(stderr, "Error de memoria al asignar grayscale\n");
+        return 0;
+    }
+
+    int memoriaOk = 1;
+    for (int y = 0; y < info->alto && memoriaOk; y++) {
+        pixelesGray[y] = (unsigned char**)malloc(info->ancho * sizeof(unsigned char*));
+        if (!pixelesGray[y]) {
+            memoriaOk = 0;
+            for (int yy = 0; yy < y; yy++) {
+                for (int x = 0; x < info->ancho; x++) {
+                    free(pixelesGray[yy][x]);
+                }
+                free(pixelesGray[yy]);
+            }
+            free(pixelesGray);
+            return 0;
+        }
+
+        for (int x = 0; x < info->ancho && memoriaOk; x++) {
+            pixelesGray[y][x] = (unsigned char*)malloc(1 * sizeof(unsigned char));
+            if (!pixelesGray[y][x]) {
+                memoriaOk = 0;
+                for (int xx = 0; xx < x; xx++) {
+                    free(pixelesGray[y][xx]);
+                }
+                for (int yy = 0; yy < y; yy++) {
+                    for (int xx = 0; xx < info->ancho; xx++) {
+                        free(pixelesGray[yy][xx]);
+                    }
+                    free(pixelesGray[yy]);
+                }
+                free(pixelesGray[y]);
+                free(pixelesGray);
+                return 0;
+            }
+
+            // QUÉ: Calcular valor grayscale usando ponderación ITU-R BT.601.
+            // CÓMO: Gray = 0.299*R + 0.587*G + 0.114*B
+            // POR QUÉ: Refleja la sensibilidad perceptual del ojo humano.
+            float r = (float)info->pixeles[y][x][0];
+            float g = (float)info->pixeles[y][x][1];
+            float b = (float)info->pixeles[y][x][2];
+            float gray = 0.299f * r + 0.587f * g + 0.114f * b;
+            pixelesGray[y][x][0] = (unsigned char)(gray + 0.5f); // Redondeo
+        }
+    }
+
+    // QUÉ: Reemplazar imagen original con grayscale.
+    for (int y = 0; y < info->alto; y++) {
+        for (int x = 0; x < info->ancho; x++) {
+            free(info->pixeles[y][x]);
+        }
+        free(info->pixeles[y]);
+    }
+    free(info->pixeles);
+    info->pixeles = pixelesGray;
+    info->canales = 1;
+
+    printf("Imagen convertida a escala de grises.\n");
+    return 1;
+}
+
+// QUÉ: Estructura para pasar datos al hilo de Sobel.
+// CÓMO: Contiene imagen original, gradientes Gx y Gy, y rango de trabajo.
+// POR QUÉ: Permite calcular gradientes en paralelo por rangos de filas.
+typedef struct {
+    unsigned char*** pixelesOrigen;
+    float** gradienteX;
+    float** gradienteY;
+    int inicio;
+    int fin;
+    int ancho;
+    int alto;
+} SobelArgs;
+
+// QUÉ: Calcular gradientes Sobel en un rango de filas (para hilos).
+// CÓMO: Aplica kernels Gx y Gy con convolución, guarda en matrices float.
+// POR QUÉ: Permite paralelizar el cálculo de gradientes.
+void* calcularSobelHilo(void* args) {
+    SobelArgs* sArgs = (SobelArgs*)args;
+
+    // QUÉ: Definir kernels Sobel para Gx (horizontal) y Gy (vertical).
+    // CÓMO: Gx detecta bordes verticales, Gy detecta bordes horizontales.
+    // POR QUÉ: Son operadores de derivada optimizados con suavizado.
+    int Gx[3][3] = {
+        {-1, 0, 1},
+        {-2, 0, 2},
+        {-1, 0, 1}
+    };
+    int Gy[3][3] = {
+        {-1, -2, -1},
+        { 0,  0,  0},
+        { 1,  2,  1}
+    };
+
+    for (int y = sArgs->inicio; y < sArgs->fin; y++) {
+        for (int x = 0; x < sArgs->ancho; x++) {
+            float sumX = 0.0f;
+            float sumY = 0.0f;
+
+            // QUÉ: Aplicar convolución con kernels Sobel.
+            // CÓMO: Multiplica vecindario 3x3 por cada kernel.
+            // POR QUÉ: Calcula aproximación de derivadas parciales.
+            for (int ky = 0; ky < 3; ky++) {
+                for (int kx = 0; kx < 3; kx++) {
+                    int iy = y + ky - 1;
+                    int ix = x + kx - 1;
+
+                    // QUÉ: Manejo de bordes con replicación.
+                    if (iy < 0) iy = 0;
+                    if (iy >= sArgs->alto) iy = sArgs->alto - 1;
+                    if (ix < 0) ix = 0;
+                    if (ix >= sArgs->ancho) ix = sArgs->ancho - 1;
+
+                    float pixel = (float)sArgs->pixelesOrigen[iy][ix][0];
+                    sumX += pixel * Gx[ky][kx];
+                    sumY += pixel * Gy[ky][kx];
+                }
+            }
+
+            sArgs->gradienteX[y][x] = sumX;
+            sArgs->gradienteY[y][x] = sumY;
+        }
+    }
+    return NULL;
+}
+
+// QUÉ: Aplicar detector de bordes Sobel a la imagen.
+// CÓMO: Convierte a grayscale, calcula Gx y Gy, computa magnitud del gradiente.
+// POR QUÉ: Detecta bordes calculando cambios bruscos de intensidad en todas direcciones.
+int aplicarSobel(ImagenInfo* info) {
+    if (!info->pixeles) {
+        fprintf(stderr, "No hay imagen cargada.\n");
+        return 0;
+    }
+
+    // QUÉ: Convertir a grayscale si es necesario.
+    if (info->canales == 3) {
+        if (!convertirAGrayscale(info)) {
+            return 0;
+        }
+    }
+
+    // QUÉ: Asignar matrices para gradientes Gx y Gy.
+    // CÓMO: Usa float para precisión en cálculos intermedios.
+    // POR QUÉ: Evita pérdida de precisión antes de calcular magnitud.
+    float** gradienteX = (float**)malloc(info->alto * sizeof(float*));
+    float** gradienteY = (float**)malloc(info->alto * sizeof(float*));
+    if (!gradienteX || !gradienteY) {
+        fprintf(stderr, "Error de memoria al asignar gradientes\n");
+        if (gradienteX) free(gradienteX);
+        if (gradienteY) free(gradienteY);
+        return 0;
+    }
+
+    int memoriaOk = 1;
+    for (int y = 0; y < info->alto && memoriaOk; y++) {
+        gradienteX[y] = (float*)malloc(info->ancho * sizeof(float));
+        gradienteY[y] = (float*)malloc(info->ancho * sizeof(float));
+        if (!gradienteX[y] || !gradienteY[y]) {
+            memoriaOk = 0;
+            fprintf(stderr, "Error de memoria al asignar fila de gradientes\n");
+            for (int yy = 0; yy <= y; yy++) {
+                if (gradienteX[yy]) free(gradienteX[yy]);
+                if (gradienteY[yy]) free(gradienteY[yy]);
+            }
+            free(gradienteX);
+            free(gradienteY);
+            return 0;
+        }
+    }
+
+    // QUÉ: Calcular gradientes con hilos.
+    const int numHilos = 4;
+    pthread_t hilos[numHilos];
+    SobelArgs args[numHilos];
+    int filasPorHilo = (int)ceil((double)info->alto / numHilos);
+
+    for (int i = 0; i < numHilos; i++) {
+        args[i].pixelesOrigen = info->pixeles;
+        args[i].gradienteX = gradienteX;
+        args[i].gradienteY = gradienteY;
+        args[i].inicio = i * filasPorHilo;
+        args[i].fin = ((i + 1) * filasPorHilo < info->alto) ? (i + 1) * filasPorHilo : info->alto;
+        args[i].ancho = info->ancho;
+        args[i].alto = info->alto;
+
+        if (pthread_create(&hilos[i], NULL, calcularSobelHilo, &args[i]) != 0) {
+            fprintf(stderr, "Error al crear hilo %d\n", i);
+            for (int j = 0; j < i; j++) {
+                pthread_join(hilos[j], NULL);
+            }
+            for (int y = 0; y < info->alto; y++) {
+                free(gradienteX[y]);
+                free(gradienteY[y]);
+            }
+            free(gradienteX);
+            free(gradienteY);
+            return 0;
+        }
+    }
+
+    // Esperar hilos
+    for (int i = 0; i < numHilos; i++) {
+        pthread_join(hilos[i], NULL);
+    }
+
+    // QUÉ: Calcular magnitud del gradiente y actualizar imagen.
+    // CÓMO: |∇I| = sqrt(Gx² + Gy²), clamp a [0, 255].
+    // POR QUÉ: La magnitud indica la intensidad del borde.
+    for (int y = 0; y < info->alto; y++) {
+        for (int x = 0; x < info->ancho; x++) {
+            float gx = gradienteX[y][x];
+            float gy = gradienteY[y][x];
+            float magnitud = sqrtf(gx * gx + gy * gy);
+
+            // QUÉ: Clamp a [0, 255].
+            int valor = (int)(magnitud + 0.5f);
+            if (valor > 255) valor = 255;
+            if (valor < 0) valor = 0;
+
+            info->pixeles[y][x][0] = (unsigned char)valor;
+        }
+    }
+
+    // Liberar gradientes
+    for (int y = 0; y < info->alto; y++) {
+        free(gradienteX[y]);
+        free(gradienteY[y]);
+    }
+    free(gradienteX);
+    free(gradienteY);
+
+    printf("Detector de bordes Sobel aplicado con %d hilos.\n", numHilos);
+    return 1;
+}
+
+
+
+
+
+
+
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 // QUÉ: Mostrar el menú interactivo.
 // CÓMO: Imprime opciones y espera entrada del usuario.
 // POR QUÉ: Proporciona una interfaz simple para interactuar con el programa.
@@ -258,7 +808,9 @@ void mostrarMenu() {
     printf("2. Mostrar matriz de píxeles\n");
     printf("3. Guardar como PNG\n");
     printf("4. Ajustar brillo (+/- valor) concurrentemente\n");
-    printf("5. Salir\n");
+    printf("5. Aplicar convolución Gaussiana (blur)\n");
+    printf("6. Aplicar detector de bordes Sobel\n");
+    printf("7. Salir\n");
     printf("Opción: ");
 }
 
@@ -334,10 +886,34 @@ int main(int argc, char* argv[]) {
                 ajustarBrilloConcurrente(&imagen, delta);
                 break;
             }
-            case 5: // Salir
+            case 5: { // Convolución Gaussiana
+                int tamKernel;
+                float sigma;
+                printf("Tamaño del kernel (impar, 3-15): ");
+                if (scanf("%d", &tamKernel) != 1) {
+                    while (getchar() != '\n');
+                    printf("Entrada inválida.\n");
+                    continue;
+                }
+                printf("Valor de sigma (e.g., 1.0): ");
+                if (scanf("%f", &sigma) != 1) {
+                    while (getchar() != '\n');
+                    printf("Entrada inválida.\n");
+                    continue;
+                }
+                while (getchar() != '\n');
+                aplicarConvolucionGaussiana(&imagen, tamKernel, sigma);
+                break;
+            }
+            case 6: { // Sobel
+                aplicarSobel(&imagen);
+                break;
+            }
+            case 7: {// Salir
                 liberarImagen(&imagen);
                 printf("¡Adiós!\n");
                 return EXIT_SUCCESS;
+            }
             default:
                 printf("Opción inválida.\n");
         }
