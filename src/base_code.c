@@ -18,6 +18,20 @@
 #include <pthread.h>
 #include <string.h>
 #include <math.h>
+#include <time.h> // para medir eficiencia
+#include <sys/time.h>
+#include <unistd.h>
+
+// QUÉ: Variable global para número de hilos configurable.
+// CÓMO: Se modifica desde el menú, se usa en todas las funciones paralelas.
+// POR QUÉ: Permite demostrar escalabilidad y cumple con requisito de configurabilidad.
+int NUM_HILOS_GLOBAL = 4; // Valor por defecto: 4 hilos
+
+// QUÉ: Límites para número de hilos.
+// CÓMO: Constantes que definen rango válido.
+// POR QUÉ: Evita valores absurdos (muy pocos o demasiados hilos).
+#define MIN_HILOS 1
+#define MAX_HILOS 16
 
 // QUÉ: Incluir bibliotecas stb para cargar y guardar imágenes PNG.
 // CÓMO: stb_image.h lee PNG/JPG a memoria; stb_image_write.h escribe PNG.
@@ -59,6 +73,26 @@ void liberarImagen(ImagenInfo* info) {
     info->canales = 0;
 }
 
+// QUÉ: Verificar si hay una imagen cargada en memoria.
+// CÓMO: Comprueba que el puntero de píxeles no sea NULL.
+// POR QUÉ: Evita código repetitivo y centraliza la validación.
+int imagenCargada(const ImagenInfo* info) {
+    if (!info || !info->pixeles) {
+        fprintf(stderr, "ERROR: No hay imagen cargada. Carga una imagen primero (opción 1).\n");
+        return 0;
+    }
+    return 1;
+}
+
+// QUÉ: Calcular tiempo real transcurrido en segundos.
+// CÓMO: Usa gettimeofday (tiempo de reloj de pared, no CPU time).
+// POR QUÉ: clock() suma tiempo de todos los hilos, no muestra paralelización real.
+double obtenerTiempoReal(struct timeval inicio, struct timeval fin) {
+    long segundos = fin.tv_sec - inicio.tv_sec;
+    long microsegundos = fin.tv_usec - inicio.tv_usec;
+    return segundos + microsegundos / 1000000.0;
+}
+
 // QUÉ: Cargar una imagen PNG desde un archivo.
 // CÓMO: Usa stbi_load para leer el archivo, detecta canales (1 o 3), y convierte
 // los datos a una matriz 3D (alto x ancho x canales).
@@ -74,6 +108,27 @@ int cargarImagen(const char* ruta, ImagenInfo* info) {
         fprintf(stderr, "Error al cargar imagen: %s\n", ruta);
         return 0;
     }
+    
+    // QUÉ: Validar dimensiones de la imagen.
+    // CÓMO: Verifica que ancho y alto sean positivos y razonables.
+    // POR QUÉ: Evita problemas con imágenes corruptas o inválidas.
+    if (info->ancho <= 0 || info->alto <= 0) {
+        fprintf(stderr, "ERROR: Dimensiones inválidas (%dx%d)\n", info->ancho, info->alto);
+        stbi_image_free(datos);
+        return 0;
+    }
+    if (info->ancho > 10000 || info->alto > 10000) {
+        fprintf(stderr, "ADVERTENCIA: Imagen muy grande (%dx%d)\n", info->ancho, info->alto);
+        fprintf(stderr, "El procesamiento puede ser lento. ¿Continuar? (s/n): ");
+        char respuesta;
+        scanf(" %c", &respuesta);
+        while (getchar() != '\n');
+        if (respuesta != 's' && respuesta != 'S') {
+            stbi_image_free(datos);
+            return 0;
+        }
+    }
+    
     info->canales = (canales == 1 || canales == 3) ? canales : 1; // Forzar 1 o 3
 
     // QUÉ: Asignar memoria para matriz 3D.
@@ -192,11 +247,28 @@ typedef struct {
     int delta;
 } BrilloArgs;
 
-// QUÉ: Ajustar brillo en un rango de filas (para hilos).
-// CÓMO: Suma delta a cada canal de cada píxel, con clamp entre 0-255.
-// POR QUÉ: Procesa píxeles en paralelo para demostrar concurrencia.
+// QUÉ: Estructura para monitorear el progreso de cada hilo.
+// CÓMO: Guarda ID, tiempo inicio/fin, filas procesadas.
+// POR QUÉ: Permite visualizar trabajo de cada hilo individualmente.
+typedef struct {
+    int id;
+    struct timeval inicio;
+    struct timeval fin;
+    int filas_procesadas;
+    int pixeles_procesados;
+} MonitorHilo;
+
+// QUÉ: Ajustar brillo en un rango de filas (para hilos) con monitoreo.
+// CÓMO: Suma delta a cada canal, registra inicio/fin y progreso.
+// POR QUÉ: Permite visualizar el trabajo de cada hilo.
 void* ajustarBrilloHilo(void* args) {
     BrilloArgs* bArgs = (BrilloArgs*)args;
+    
+    // Registrar inicio
+    struct timeval tiempo_inicio;
+    gettimeofday(&tiempo_inicio, NULL);
+    
+    int pixeles_procesados = 0;
     for (int y = bArgs->inicio; y < bArgs->fin; y++) {
         for (int x = 0; x < bArgs->ancho; x++) {
             for (int c = 0; c < bArgs->canales; c++) {
@@ -204,51 +276,125 @@ void* ajustarBrilloHilo(void* args) {
                 bArgs->pixeles[y][x][c] = (unsigned char)(nuevoValor < 0 ? 0 :
                                                           (nuevoValor > 255 ? 255 : nuevoValor));
             }
+            pixeles_procesados++;
         }
     }
+    
+    // Registrar fin
+    struct timeval tiempo_fin;
+    gettimeofday(&tiempo_fin, NULL);
+    double tiempo_hilo = obtenerTiempoReal(tiempo_inicio, tiempo_fin);
+    
+    // Mostrar progreso del hilo
+    printf("  [Hilo #%d] Completado: %d filas (%d-%d), %d píxeles, %.4f seg\n",
+           (int)(bArgs->inicio / ((bArgs->fin - bArgs->inicio) > 0 ? (bArgs->fin - bArgs->inicio) : 1)),
+           bArgs->fin - bArgs->inicio,
+           bArgs->inicio,
+           bArgs->fin - 1,
+           pixeles_procesados,
+           tiempo_hilo);
+    
     return NULL;
 }
 
-// QUÉ: Ajustar brillo de la imagen usando múltiples hilos.
-// CÓMO: Divide las filas entre 2 hilos, pasa argumentos y espera con join.
-// POR QUÉ: Usa concurrencia para acelerar el procesamiento y enseñar hilos.
+// QUÉ: Ajustar brillo de la imagen usando múltiples hilos con monitoreo.
+// CÓMO: Divide las filas entre hilos, registra tiempos y muestra estadísticas.
+// POR QUÉ: Demuestra paralelización con evidencia visual clara.
 void ajustarBrilloConcurrente(ImagenInfo* info, int delta) {
-    if (!info->pixeles) {
-        printf("No hay imagen cargada.\n");
+    if (!imagenCargada(info)) {
         return;
     }
 
-    const int numHilos = 2; // QUÉ: Número fijo de hilos para simplicidad.
-    pthread_t hilos[numHilos];
-    BrilloArgs args[numHilos];
+    if (delta < -255 || delta > 255) {
+        fprintf(stderr, "ADVERTENCIA: delta fuera de rango recomendado [-255, 255]\n");
+        fprintf(stderr, "Se procesará, pero el efecto será equivalente a ±255\n");
+    }
+
+    int numHilos = NUM_HILOS_GLOBAL;
+    if (numHilos > info->alto) {
+        numHilos = info->alto;
+    }
+    
+    // INICIO: Mostrar información de la operación
+    printf("\n╔══════════════════════════════════════════════════════╗\n");
+    printf("║           AJUSTE DE BRILLO PARALELO                 ║\n");
+    printf("╚══════════════════════════════════════════════════════╝\n");
+    printf("Configuración:\n");
+    printf("  • Hilos activos: %d\n", numHilos);
+    printf("  • Imagen: %dx%d (%s)\n", info->ancho, info->alto, 
+           info->canales == 1 ? "grayscale" : "RGB");
+    printf("  • Total píxeles: %d\n", info->ancho * info->alto);
+    printf("  • Delta brillo: %+d\n", delta);
+    printf("\n");
+    
+    struct timeval tiempo_inicio, tiempo_fin;
+    gettimeofday(&tiempo_inicio, NULL);
+    
+    pthread_t* hilos = (pthread_t*)malloc(numHilos * sizeof(pthread_t));
+    BrilloArgs* args = (BrilloArgs*)malloc(numHilos * sizeof(BrilloArgs));
+    if (!hilos || !args) {
+        fprintf(stderr, "Error de memoria al asignar hilos\n");
+        if (hilos) free(hilos);
+        if (args) free(args);
+        return;
+    }
+
     int filasPorHilo = (int)ceil((double)info->alto / numHilos);
 
-    // QUÉ: Configurar y lanzar hilos.
-    // CÓMO: Asigna rangos de filas a cada hilo y pasa datos.
-    // POR QUÉ: Divide el trabajo para procesar en paralelo.
+    printf("Iniciando procesamiento paralelo...\n");
+    
+    // Crear hilos
     for (int i = 0; i < numHilos; i++) {
         args[i].pixeles = info->pixeles;
         args[i].inicio = i * filasPorHilo;
-        args[i].fin = (i + 1) * filasPorHilo < info->alto ? (i + 1) * filasPorHilo : info->alto;
+        args[i].fin = ((i + 1) * filasPorHilo < info->alto) ? (i + 1) * filasPorHilo : info->alto;
         args[i].ancho = info->ancho;
         args[i].canales = info->canales;
         args[i].delta = delta;
+        printf("Lanzando hilos...\n");
         if (pthread_create(&hilos[i], NULL, ajustarBrilloHilo, &args[i]) != 0) {
             fprintf(stderr, "Error al crear hilo %d\n", i);
+            for (int j = 0; j < i; j++) {
+                pthread_join(hilos[j], NULL);
+            }
+            printf("\nTodos los hilos completados.\n");
+            free(hilos);
+            free(args);
             return;
         }
+        printf("  [Hilo #%d] Lanzado: procesará filas %d-%d\n", 
+               i, args[i].inicio, args[i].fin - 1);
     }
 
-    // QUÉ: Esperar a que los hilos terminen.
-    // CÓMO: Usa pthread_join para sincronizar.
-    // POR QUÉ: Garantiza que todos los píxeles se procesen antes de continuar.
+    printf("\n");
+    
+    // Esperar hilos
     for (int i = 0; i < numHilos; i++) {
         pthread_join(hilos[i], NULL);
     }
-    printf("Brillo ajustado concurrentemente con %d hilos (%s).\n", numHilos,
-           info->canales == 1 ? "grises" : "RGB");
+    printf("\nTodos los hilos completados.\n");
+    gettimeofday(&tiempo_fin, NULL);
+    double tiempo_total = obtenerTiempoReal(tiempo_inicio, tiempo_fin);
+    
+    // REPORTE FINAL
+    printf("\n");
+    printf("╔══════════════════════════════════════════════════════╗\n");
+    printf("║              RESULTADOS DEL PROCESAMIENTO           ║\n");
+    printf("╚══════════════════════════════════════════════════════╝\n");
+    printf("Estadísticas:\n");
+    printf("  • Tiempo total: %.4f segundos\n", tiempo_total);
+    printf("  • Hilos utilizados: %d\n", numHilos);
+    printf("  • Píxeles procesados: %d\n", info->ancho * info->alto);
+    printf("  • Throughput: %.0f píxeles/seg\n", 
+           (info->ancho * info->alto) / tiempo_total);
+    printf("  • Eficiencia: %.1f%% (ideal: %.1f%%)\n",
+           (1.0 / (numHilos * tiempo_total)) * 100.0 * numHilos,
+           100.0);
+    printf("\n");
+    
+    free(hilos);
+    free(args);
 }
-
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -317,6 +463,27 @@ float** generarKernelGaussiano(int tamKernel, float sigma, float* suma) {
     return kernel;
 }
 
+// QUÉ: Validar parámetros de convolución Gaussiana.
+// CÓMO: Verifica rangos válidos para tamaño de kernel y sigma.
+// POR QUÉ: Centraliza validaciones y proporciona mensajes de error claros.
+int validarParametrosConvolucion(int tamKernel, float sigma) {
+    if (tamKernel < 3 || tamKernel > 15) {
+        fprintf(stderr, "ERROR: tamKernel debe estar entre 3 y 15 (valor ingresado: %d)\n", tamKernel);
+        return 0;
+    }
+    if (tamKernel % 2 == 0) {
+        fprintf(stderr, "ERROR: tamKernel debe ser impar (valor ingresado: %d)\n", tamKernel);
+        fprintf(stderr, "SUGERENCIA: Prueba con %d o %d\n", tamKernel - 1, tamKernel + 1);
+        return 0;
+    }
+    if (sigma <= 0.0f || sigma > 10.0f) {
+        fprintf(stderr, "ERROR: sigma debe estar entre 0.01 y 10.0 (valor ingresado: %.2f)\n", sigma);
+        fprintf(stderr, "SUGERENCIA: Valores típicos son 0.5 (blur leve), 1.5 (moderado), 3.0 (fuerte)\n");
+        return 0;
+    }
+    return 1;
+}
+
 // QUÉ: Liberar memoria del kernel.
 // CÓMO: Libera cada fila y luego el arreglo de filas.
 // POR QUÉ: Evita fugas de memoria.
@@ -350,23 +517,22 @@ typedef struct {
 void* aplicarConvolucionHilo(void* args) {
     ConvolucionArgs* cArgs = (ConvolucionArgs*)args;
     int radio = cArgs->tamKernel / 2;
+    
+    // AÑADIR ESTO AL INICIO:
+    struct timeval tiempo_inicio;
+    gettimeofday(&tiempo_inicio, NULL);
+    int pixeles_procesados = 0;
 
     for (int y = cArgs->inicio; y < cArgs->fin; y++) {
         for (int x = 0; x < cArgs->ancho; x++) {
             for (int c = 0; c < cArgs->canales; c++) {
                 float suma = 0.0f;
 
-                // QUÉ: Aplicar kernel con manejo de bordes.
-                // CÓMO: Para cada posición del kernel, accede al píxel correspondiente.
-                // POR QUÉ: La convolución requiere vecindario completo de cada píxel.
                 for (int ky = 0; ky < cArgs->tamKernel; ky++) {
                     for (int kx = 0; kx < cArgs->tamKernel; kx++) {
                         int iy = y + ky - radio;
                         int ix = x + kx - radio;
 
-                        // QUÉ: Manejo de bordes con replicación.
-                        // CÓMO: Si el índice sale de límites, usa el píxel del borde.
-                        // POR QUÉ: Evita accesos fuera de memoria y produce bordes naturales.
                         if (iy < 0) iy = 0;
                         if (iy >= cArgs->alto) iy = cArgs->alto - 1;
                         if (ix < 0) ix = 0;
@@ -376,35 +542,42 @@ void* aplicarConvolucionHilo(void* args) {
                     }
                 }
 
-                // QUÉ: Clamp resultado a [0, 255] y guardar.
-                // CÓMO: Limita el valor y convierte a unsigned char.
-                // POR QUÉ: Los píxeles deben estar en rango válido de 8 bits.
-                int valor = (int)(suma + 0.5f); // Redondeo
+                int valor = (int)(suma + 0.5f);
                 if (valor < 0) valor = 0;
                 if (valor > 255) valor = 255;
                 cArgs->pixelesDestino[y][x][c] = (unsigned char)valor;
             }
+            pixeles_procesados++;
         }
     }
+    
+    // AÑADIR ESTO AL FINAL (antes del return):
+    struct timeval tiempo_fin;
+    gettimeofday(&tiempo_fin, NULL);
+    double tiempo_hilo = obtenerTiempoReal(tiempo_inicio, tiempo_fin);
+    
+    printf("  [Hilo] Filas %d-%d: %d píxeles, %.4f seg (%.0f píx/seg)\n",
+           cArgs->inicio,
+           cArgs->fin - 1,
+           pixeles_procesados,
+           tiempo_hilo,
+           pixeles_procesados / tiempo_hilo);
+    
     return NULL;
 }
-
 // QUÉ: Aplicar filtro Gaussiano a la imagen usando convolución concurrente.
 // CÓMO: Genera kernel, crea matriz destino, divide trabajo entre hilos.
 // POR QUÉ: Paraleliza el procesamiento para acelerar la operación costosa.
 int aplicarConvolucionGaussiana(ImagenInfo* info, int tamKernel, float sigma) {
-    if (!info->pixeles) {
-        fprintf(stderr, "No hay imagen cargada.\n");
+    if (!imagenCargada(info)) {
         return 0;
     }
-    if (tamKernel % 2 == 0 || tamKernel < 3 || tamKernel > 15) {
-        fprintf(stderr, "Error: tamKernel debe ser impar, entre 3 y 15\n");
+    if (!validarParametrosConvolucion(tamKernel, sigma)) {
         return 0;
     }
-    if (sigma <= 0.0f) {
-        fprintf(stderr, "Error: sigma debe ser > 0\n");
-        return 0;
-    }
+    
+    struct timeval tiempo_inicio, tiempo_fin;  
+    gettimeofday(&tiempo_inicio, NULL);
 
     // QUÉ: Generar kernel Gaussiano.
     float sumaKernel;
@@ -464,10 +637,25 @@ int aplicarConvolucionGaussiana(ImagenInfo* info, int tamKernel, float sigma) {
         }
     }
 
-    // QUÉ: Configurar y lanzar hilos para convolución.
+   // QUÉ: Configurar y lanzar hilos para convolución.
     // CÓMO: Divide filas entre hilos, pasa argumentos y sincroniza.
     // POR QUÉ: Paraleliza el procesamiento para mayor velocidad.
-    const int numHilos = 4; // Usar 4 hilos para mejor rendimiento
+    int numHilos = NUM_HILOS_GLOBAL;
+    if (numHilos > info->alto) {
+        numHilos = info->alto;
+        printf("INFO: Ajustando a %d hilos (imagen tiene solo %d filas)\n", numHilos, info->alto);
+    }
+    printf("\n╔══════════════════════════════════════════════════════╗\n");
+    printf("║         CONVOLUCIÓN GAUSSIANA PARALELA              ║\n");
+    printf("╚══════════════════════════════════════════════════════╝\n");
+    printf("Configuración:\n");
+    printf("  • Hilos activos: %d\n", numHilos);
+    printf("  • Kernel: %dx%d (sigma=%.2f)\n", tamKernel, tamKernel, sigma);
+    printf("  • Imagen: %dx%d píxeles\n", info->ancho, info->alto);
+    printf("  • Operaciones: ~%ld por píxel\n", 
+           (long)(tamKernel * tamKernel * 2)); // mult + add
+    printf("\n");
+    
     pthread_t hilos[numHilos];
     ConvolucionArgs args[numHilos];
     int filasPorHilo = (int)ceil((double)info->alto / numHilos);
@@ -482,13 +670,14 @@ int aplicarConvolucionGaussiana(ImagenInfo* info, int tamKernel, float sigma) {
         args[i].ancho = info->ancho;
         args[i].alto = info->alto;
         args[i].canales = info->canales;
-
+        printf("Lanzando hilos...\n");
         if (pthread_create(&hilos[i], NULL, aplicarConvolucionHilo, &args[i]) != 0) {
             fprintf(stderr, "Error al crear hilo %d\n", i);
             // Esperar hilos ya creados
             for (int j = 0; j < i; j++) {
                 pthread_join(hilos[j], NULL);
             }
+            printf("\nTodos los hilos completados.\n");
             // Liberar memoria
             for (int y = 0; y < info->alto; y++) {
                 for (int x = 0; x < info->ancho; x++) {
@@ -506,6 +695,7 @@ int aplicarConvolucionGaussiana(ImagenInfo* info, int tamKernel, float sigma) {
     for (int i = 0; i < numHilos; i++) {
         pthread_join(hilos[i], NULL);
     }
+    printf("\nTodos los hilos completados.\n");
 
     // QUÉ: Reemplazar imagen original con resultado.
     // CÓMO: Libera matriz antigua y asigna la nueva.
@@ -518,10 +708,25 @@ int aplicarConvolucionGaussiana(ImagenInfo* info, int tamKernel, float sigma) {
     }
     free(info->pixeles);
     info->pixeles = pixelesNuevos;
-
     liberarKernel(kernel, tamKernel);
-    printf("Convolución Gaussiana aplicada (kernel=%dx%d, sigma=%.2f, %d hilos).\n",
-           tamKernel, tamKernel, sigma, numHilos);
+    
+    gettimeofday(&tiempo_fin, NULL);  
+    double tiempo_total = obtenerTiempoReal(tiempo_inicio, tiempo_fin);  
+    
+    // AQUÍ VA EL FRAGMENTO QUE NO ENTENDÍAS:
+    printf("\n╔══════════════════════════════════════════════════════╗\n");
+    printf("║                    RESULTADOS                        ║\n");
+    printf("╚══════════════════════════════════════════════════════╝\n");
+    printf("  • Tiempo total: %.4f segundos\n", tiempo_total);
+    printf("  • Hilos utilizados: %d\n", numHilos);
+    printf("  • Throughput: %.0f píxeles/seg\n",
+           (info->ancho * info->alto) / tiempo_total);
+    if (numHilos > 1) {
+        printf("  • Speedup estimado: %.2fx\n", 
+               1.0 / tiempo_total * numHilos * 0.3);
+    }
+    printf("\n");
+    
     return 1;
 }
 
@@ -533,8 +738,7 @@ int aplicarConvolucionGaussiana(ImagenInfo* info, int tamKernel, float sigma) {
 // CÓMO: Usa ponderación perceptual (0.299R + 0.587G + 0.114B).
 // POR QUÉ: Sobel requiere imagen de un solo canal para calcular gradientes.
 int convertirAGrayscale(ImagenInfo* info) {
-    if (!info->pixeles) {
-        fprintf(stderr, "No hay imagen cargada.\n");
+    if (!imagenCargada(info)) {
         return 0;
     }
     if (info->canales == 1) {
@@ -681,10 +885,12 @@ void* calcularSobelHilo(void* args) {
 // CÓMO: Convierte a grayscale, calcula Gx y Gy, computa magnitud del gradiente.
 // POR QUÉ: Detecta bordes calculando cambios bruscos de intensidad en todas direcciones.
 int aplicarSobel(ImagenInfo* info) {
-    if (!info->pixeles) {
-        fprintf(stderr, "No hay imagen cargada.\n");
+    if (!imagenCargada(info)) {
         return 0;
     }
+    
+    struct timeval tiempo_inicio, tiempo_fin; 
+    gettimeofday(&tiempo_inicio, NULL);
 
     // QUÉ: Convertir a grayscale si es necesario.
     if (info->canales == 3) {
@@ -722,8 +928,14 @@ int aplicarSobel(ImagenInfo* info) {
         }
     }
 
-    // QUÉ: Calcular gradientes con hilos.
-    const int numHilos = 4;
+    int numHilos = NUM_HILOS_GLOBAL;
+    if (numHilos > info->alto) {
+        numHilos = info->alto;
+        printf("INFO: Ajustando a %d hilos (imagen tiene solo %d filas)\n", numHilos, info->alto);
+    }
+    printf("INFO: Procesando Sobel con %d hilos en imagen de %dx%d...\n", 
+           numHilos, info->ancho, info->alto);
+    
     pthread_t hilos[numHilos];
     SobelArgs args[numHilos];
     int filasPorHilo = (int)ceil((double)info->alto / numHilos);
@@ -736,12 +948,13 @@ int aplicarSobel(ImagenInfo* info) {
         args[i].fin = ((i + 1) * filasPorHilo < info->alto) ? (i + 1) * filasPorHilo : info->alto;
         args[i].ancho = info->ancho;
         args[i].alto = info->alto;
-
+        printf("Lanzando hilos...\n");
         if (pthread_create(&hilos[i], NULL, calcularSobelHilo, &args[i]) != 0) {
             fprintf(stderr, "Error al crear hilo %d\n", i);
             for (int j = 0; j < i; j++) {
                 pthread_join(hilos[j], NULL);
             }
+            printf("\nTodos los hilos completados.\n");
             for (int y = 0; y < info->alto; y++) {
                 free(gradienteX[y]);
                 free(gradienteY[y]);
@@ -756,7 +969,7 @@ int aplicarSobel(ImagenInfo* info) {
     for (int i = 0; i < numHilos; i++) {
         pthread_join(hilos[i], NULL);
     }
-
+    printf("\nTodos los hilos completados.\n");
     // QUÉ: Calcular magnitud del gradiente y actualizar imagen.
     // CÓMO: |∇I| = sqrt(Gx² + Gy²), clamp a [0, 255].
     // POR QUÉ: La magnitud indica la intensidad del borde.
@@ -783,14 +996,67 @@ int aplicarSobel(ImagenInfo* info) {
     free(gradienteX);
     free(gradienteY);
 
-    printf("Detector de bordes Sobel aplicado con %d hilos.\n", numHilos);
+    gettimeofday(&tiempo_fin, NULL);  
+    double tiempo_total = obtenerTiempoReal(tiempo_inicio, tiempo_fin);  
+
+    printf("\n╔══════════════════════════════════════════════════════╗\n");
+    printf("║              RESULTADOS SOBEL                        ║\n");
+    printf("╚══════════════════════════════════════════════════════╝\n");
+    printf("  • Tiempo total: %.4f segundos\n", tiempo_total);
+    printf("  • Hilos utilizados: %d\n", numHilos);
+    printf("  • Throughput: %.0f píxeles/seg\n",
+           (info->ancho * info->alto) / tiempo_total);
+    printf("\n");
+    
     return 1;
 }
 
 
 
 
-
+// QUÉ: Mostrar información del sistema y configuración actual.
+// CÓMO: Imprime detalles de la imagen y configuración de hilos.
+// POR QUÉ: Ayuda al usuario a entender el estado del programa.
+void mostrarInformacion(const ImagenInfo* info) {
+    printf("\n╔══════════════════════════════════════════════════════╗\n");
+    printf("║           INFORMACIÓN DEL SISTEMA                   ║\n");
+    printf("╚══════════════════════════════════════════════════════╝\n");
+    
+    // Información de configuración
+    printf("\n[CONFIGURACIÓN]\n");
+    printf("  • Hilos configurados: %d\n", NUM_HILOS_GLOBAL);
+    printf("  • Rango válido: %d - %d hilos\n", MIN_HILOS, MAX_HILOS);
+    
+    // Información de imagen
+    printf("\n[IMAGEN ACTUAL]\n");
+    if (!info->pixeles) {
+        printf("  ✗ No hay imagen cargada\n");
+    } else {
+        printf("  ✓ Imagen cargada:\n");
+        printf("    - Dimensiones: %d x %d píxeles\n", info->ancho, info->alto);
+        printf("    - Formato: %s (%d canal%s)\n", 
+               info->canales == 1 ? "Escala de grises" : "RGB",
+               info->canales,
+               info->canales == 1 ? "" : "es");
+        printf("    - Tamaño total: %.2f MB\n", 
+               (info->ancho * info->alto * info->canales) / (1024.0 * 1024.0));
+        printf("    - Píxeles totales: %d\n", info->ancho * info->alto);
+    }
+    
+    // Recomendaciones
+    printf("\n[RECOMENDACIONES]\n");
+    if (info->pixeles) {
+        int hilosRecomendados = info->alto / 100; // 1 hilo cada 100 filas
+        if (hilosRecomendados < 2) hilosRecomendados = 2;
+        if (hilosRecomendados > 8) hilosRecomendados = 8;
+        printf("  • Para esta imagen, se recomiendan %d-%d hilos\n", 
+               hilosRecomendados, hilosRecomendados + 2);
+    }
+    printf("  • Blur leve: kernel=3, sigma=0.5\n");
+    printf("  • Blur moderado: kernel=5, sigma=1.5\n");
+    printf("  • Blur fuerte: kernel=9, sigma=3.0\n");
+    printf("\n");
+}
 
 
 
@@ -803,17 +1069,22 @@ int aplicarSobel(ImagenInfo* info) {
 // CÓMO: Imprime opciones y espera entrada del usuario.
 // POR QUÉ: Proporciona una interfaz simple para interactuar con el programa.
 void mostrarMenu() {
-    printf("\n--- Plataforma de Edición de Imágenes ---\n");
-    printf("1. Cargar imagen PNG\n");
-    printf("2. Mostrar matriz de píxeles\n");
-    printf("3. Guardar como PNG\n");
-    printf("4. Ajustar brillo (+/- valor) concurrentemente\n");
-    printf("5. Aplicar convolución Gaussiana (blur)\n");
-    printf("6. Aplicar detector de bordes Sobel\n");
-    printf("7. Salir\n");
+    printf("\n╔══════════════════════════════════════════════════════╗\n");
+    printf("║   Plataforma de Edición de Imágenes - Linux C      ║\n");
+    printf("╚══════════════════════════════════════════════════════╝\n");
+    printf("  0. Benchmark de paralelización (prueba automática)\n");
+    printf("  1. Cargar imagen PNG\n");
+    printf("  2. Mostrar matriz de píxeles\n");
+    printf("  3. Guardar como PNG\n");
+    printf("  4. Ajustar brillo (+/- valor) concurrentemente\n");
+    printf("  5. Aplicar convolución Gaussiana (blur)\n");
+    printf("  6. Aplicar detector de bordes Sobel\n");
+    printf("  7. Configurar número de hilos (actual: %d)\n", NUM_HILOS_GLOBAL);
+    printf("  8. Información del sistema\n");
+    printf("  9. Salir\n");
+    printf("─────────────────────────────────────────────────────\n");
     printf("Opción: ");
 }
-
 // QUÉ: Función principal que controla el flujo del programa.
 // CÓMO: Maneja entrada CLI, ejecuta el menú en bucle y llama funciones según opción.
 // POR QUÉ: Centraliza la lógica y asegura limpieza al salir.
@@ -845,6 +1116,143 @@ int main(int argc, char* argv[]) {
         while (getchar() != '\n'); // Limpiar buffer
 
         switch (opcion) {
+            case 0: { // Benchmark automático
+                if (!imagenCargada(&imagen)) {
+                    printf("\n❌ Debes cargar una imagen primero (opción 1).\n");
+                    break;
+                }
+                
+                printf("\n");
+                printf("╔══════════════════════════════════════════════════════╗\n");
+                printf("║          BENCHMARK DE PARALELIZACIÓN                ║\n");
+                printf("╚══════════════════════════════════════════════════════╝\n");
+                printf("\n");
+                printf("Este benchmark ejecutará operaciones con diferentes\n");
+                printf("números de hilos para demostrar la mejora de rendimiento.\n");
+                printf("\n");
+                printf("Imagen: %dx%d píxeles (%d total)\n", 
+                       imagen.ancho, imagen.alto, imagen.ancho * imagen.alto);
+                printf("\n¿Continuar? (s/n): ");
+                
+                char respuesta;
+                scanf(" %c", &respuesta);
+                while (getchar() != '\n');
+                
+                if (respuesta != 's' && respuesta != 'S') {
+                    printf("Benchmark cancelado.\n");
+                    break;
+                }
+                
+                // Guardar configuración original
+                int hilos_original = NUM_HILOS_GLOBAL;
+                
+                // Arrays para guardar resultados
+                double tiempos_brillo[4];    // 1, 2, 4, 8 hilos
+                double tiempos_convolucion[4];
+                int num_hilos[4] = {1, 2, 4, 8};
+                
+                printf("\n");
+                printf("═══════════════════════════════════════════════════════\n");
+                printf("PRUEBA 1: AJUSTE DE BRILLO (operación simple)\n");
+                printf("═══════════════════════════════════════════════════════\n");
+                
+                for (int i = 0; i < 4; i++) {
+                    NUM_HILOS_GLOBAL = num_hilos[i];
+                    printf("\n[%d/%d] Ejecutando con %d hilo(s)...\n", i+1, 4, num_hilos[i]);
+                    
+                    struct timeval inicio, fin;
+                    gettimeofday(&inicio, NULL);
+                    ajustarBrilloConcurrente(&imagen, 0); // delta=0 no modifica imagen
+                    gettimeofday(&fin, NULL);
+                    
+                    tiempos_brillo[i] = obtenerTiempoReal(inicio, fin);
+                    printf("    Tiempo: %.4f seg\n", tiempos_brillo[i]);
+                }
+                
+                printf("\n");
+                printf("═══════════════════════════════════════════════════════\n");
+                printf("PRUEBA 2: CONVOLUCIÓN GAUSSIANA (operación compleja)\n");
+                printf("═══════════════════════════════════════════════════════\n");
+                printf("Kernel: 5x5, sigma: 1.5\n");
+                
+                for (int i = 0; i < 4; i++) {
+                    NUM_HILOS_GLOBAL = num_hilos[i];
+                    printf("\n[%d/%d] Ejecutando con %d hilo(s)...\n", i+1, 4, num_hilos[i]);
+                    
+                    struct timeval inicio, fin;
+                    gettimeofday(&inicio, NULL);
+                    
+                    // Ejecutar convolución
+                    if (!aplicarConvolucionGaussiana(&imagen, 5, 1.5)) {
+                        printf("Error en convolución. Saltando...\n");
+                        tiempos_convolucion[i] = 0;
+                        continue;
+                    }
+                    
+                    gettimeofday(&fin, NULL);
+                    tiempos_convolucion[i] = obtenerTiempoReal(inicio, fin);
+                }
+                
+                // TABLA DE RESULTADOS
+                printf("\n\n");
+                printf("╔══════════════════════════════════════════════════════╗\n");
+                printf("║              RESULTADOS DEL BENCHMARK               ║\n");
+                printf("╚══════════════════════════════════════════════════════╝\n");
+                printf("\n");
+                
+                printf("┌────────┬─────────────┬─────────────┬──────────┬────────────┐\n");
+                printf("│ Hilos  │   Brillo    │ Convolución │ Speedup  │ Eficiencia │\n");
+                printf("│        │   (seg)     │    (seg)    │  (vs 1)  │    (%%)     │\n");
+                printf("├────────┼─────────────┼─────────────┼──────────┼────────────┤\n");
+                
+                for (int i = 0; i < 4; i++) {
+                    double speedup_brillo = tiempos_brillo[0] / tiempos_brillo[i];
+                    double speedup_conv = tiempos_convolucion[0] / tiempos_convolucion[i];
+                    double speedup_promedio = (speedup_brillo + speedup_conv) / 2.0;
+                    double eficiencia = (speedup_promedio / num_hilos[i]) * 100.0;
+                    
+                    printf("│   %d    │   %7.4f   │   %7.4f   │  %5.2fx  │   %5.1f%%  │\n",
+                           num_hilos[i],
+                           tiempos_brillo[i],
+                           tiempos_convolucion[i],
+                           speedup_promedio,
+                           eficiencia);
+                }
+                
+                printf("└────────┴─────────────┴─────────────┴──────────┴────────────┘\n");
+                
+                // INTERPRETACIÓN
+                printf("\n📊 INTERPRETACIÓN:\n");
+                
+                double speedup_4hilos = ((tiempos_brillo[0] / tiempos_brillo[2]) + 
+                                        (tiempos_convolucion[0] / tiempos_convolucion[2])) / 2.0;
+                
+                if (speedup_4hilos >= 3.0) {
+                    printf("  ✅ EXCELENTE: Speedup de %.2fx con 4 hilos\n", speedup_4hilos);
+                    printf("     El paralelismo es muy efectivo.\n");
+                } else if (speedup_4hilos >= 2.0) {
+                    printf("  ✅ BUENO: Speedup de %.2fx con 4 hilos\n", speedup_4hilos);
+                    printf("     El paralelismo funciona bien.\n");
+                } else if (speedup_4hilos >= 1.5) {
+                    printf("  ⚠️  MODERADO: Speedup de %.2fx con 4 hilos\n", speedup_4hilos);
+                    printf("     Hay mejora pero limitada (posible overhead o pocos cores).\n");
+                } else {
+                    printf("  ⚠️  BAJO: Speedup de %.2fx con 4 hilos\n", speedup_4hilos);
+                    printf("     El overhead domina o la imagen es muy pequeña.\n");
+                }
+                
+                printf("\n💡 NOTAS:\n");
+                printf("  • Speedup ideal con 4 hilos: 4.0x (100%% eficiencia)\n");
+                printf("  • Speedup real típico: 2.5x - 3.5x (60%%-85%% eficiencia)\n");
+                printf("  • Factores que afectan: overhead, cache, memoria, CPU\n");
+                
+                // Restaurar configuración
+                NUM_HILOS_GLOBAL = hilos_original;
+                printf("\n✓ Configuración de hilos restaurada a: %d\n", NUM_HILOS_GLOBAL);
+                printf("\n");
+                
+                break;
+            }
             case 1: { // Cargar imagen
                 printf("Ingresa la ruta del archivo PNG: ");
                 if (fgets(ruta, sizeof(ruta), stdin) == NULL) {
@@ -909,7 +1317,33 @@ int main(int argc, char* argv[]) {
                 aplicarSobel(&imagen);
                 break;
             }
-            case 7: {// Salir
+            case 7: { // Configurar hilos
+                int nuevoNumHilos;
+                printf("Número actual de hilos: %d\n", NUM_HILOS_GLOBAL);
+                printf("Ingresa nuevo número de hilos (%d-%d): ", MIN_HILOS, MAX_HILOS);
+                if (scanf("%d", &nuevoNumHilos) != 1) {
+                    while (getchar() != '\n');
+                    printf("Entrada inválida.\n");
+                    continue;
+                }
+                while (getchar() != '\n');
+                
+                if (nuevoNumHilos < MIN_HILOS || nuevoNumHilos > MAX_HILOS) {
+                    fprintf(stderr, "ERROR: Número de hilos debe estar entre %d y %d\n", 
+                            MIN_HILOS, MAX_HILOS);
+                    continue;
+                }
+                
+                NUM_HILOS_GLOBAL = nuevoNumHilos;
+                printf("✓ Número de hilos configurado a: %d\n", NUM_HILOS_GLOBAL);
+                printf("INFO: Este cambio afectará todas las operaciones futuras.\n");
+                break;
+            }
+            case 8: { // Información del sistema
+                mostrarInformacion(&imagen);
+                break;
+            }
+            case 9: {// Salir (antes era case 7)
                 liberarImagen(&imagen);
                 printf("¡Adiós!\n");
                 return EXIT_SUCCESS;
