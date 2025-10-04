@@ -21,6 +21,7 @@
 #include "filters.h"
 #include "threading.h"
 #include "benchmark.h"
+#include "image_rotation.h"
 
 // QUÉ: Mostrar el menú interactivo.
 // CÓMO: Imprime opciones y espera entrada del usuario.
@@ -36,9 +37,10 @@ void mostrarMenu() {
     printf("  4. Ajustar brillo (+/- valor) concurrentemente\n");
     printf("  5. Aplicar convolución Gaussiana (blur)\n");
     printf("  6. Aplicar detector de bordes Sobel\n");
-    printf("  7. Configurar número de hilos (actual: %d)\n", NUM_HILOS_GLOBAL);
-    printf("  8. Información del sistema\n");
-    printf("  9. Salir\n");
+    printf("  7. Rotar imagen (grados)\n");
+    printf("  8. Configurar número de hilos (actual: %d)\n", NUM_HILOS_GLOBAL);
+    printf("  9. Información del sistema\n");
+    printf("  10. Salir\n");
     printf("─────────────────────────────────────────────────────\n");
     printf("Opción: ");
 }
@@ -146,7 +148,19 @@ int main(int argc, char* argv[]) {
                 aplicarSobel(&imagen);
                 break;
             }
-            case 7: { // Configurar hilos
+            case 7: { // Rotar imagen
+                int angulo;
+                printf("Ingresa el ángulo de rotación (grados): ");
+                if (scanf("%d", &angulo) != 1) {
+                    while (getchar() != '\n');
+                    printf("Entrada inválida.\n");
+                    continue;
+                }
+                while (getchar() != '\n');
+                rotateImageConcurrent(&imagen, angulo);
+                break;
+            }
+            case 8: { // Configurar hilos
                 int nuevoNumHilos;
                 printf("Número actual de hilos: %d\n", NUM_HILOS_GLOBAL);
                 printf("Ingresa nuevo número de hilos (%d-%d): ", MIN_HILOS, MAX_HILOS);
@@ -168,11 +182,11 @@ int main(int argc, char* argv[]) {
                 printf("INFO: Este cambio afectará todas las operaciones futuras.\n");
                 break;
             }
-            case 8: { // Información del sistema
+            case 9: { // Información del sistema
                 mostrarInformacion(&imagen);
                 break;
             }
-            case 9: {// Salir (antes era case 7)
+            case 10: {// Salir (antes era case 7)
                 liberarImagen(&imagen);
                 printf("¡Adiós!\n");
                 return EXIT_SUCCESS;

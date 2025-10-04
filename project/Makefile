@@ -1,54 +1,54 @@
-# Makefile para proyecto de procesamiento de imágenes modular
-# QUÉ: Automatiza compilación incremental de proyecto C modular
-# CÓMO: Usa reglas de patrón, variables y dependencias automáticas
-# POR QUÉ: Mejora productividad y evita recompilación innecesaria
+# Makefile for modular image processing project
+# WHAT: Automates incremental compilation of modular C project
+# HOW: Uses pattern rules, variables and automatic dependencies
+# WHY: Improves productivity and avoids unnecessary recompilation
 
 # ============================================================================
-# VARIABLES DE CONFIGURACIÓN
+# CONFIGURATION VARIABLES
 # ============================================================================
 
 CC = gcc
 CFLAGS = -O2 -Wall -Wextra -pthread -Iinclude -Istb
 LDFLAGS = -lm -pthread
 
-# Directorios
+# Directories
 SRC_DIR = src
 OBJ_DIR = obj
 INC_DIR = include
 STB_DIR = stb
 RESULTS_DIR = results
 
-# Ejecutable
+# Executable
 TARGET = img_processor
 
-# Archivos fuente (todos los .c en src/)
+# Source files (all .c files in src/)
 SRCS = $(wildcard $(SRC_DIR)/*.c)
 
-# Archivos objeto (uno por cada .c)
+# Object files (one for each .c)
 OBJS = $(patsubst $(SRC_DIR)/%.c,$(OBJ_DIR)/%.o,$(SRCS))
 
-# Headers (para dependencias)
+# Headers (for dependencies)
 HEADERS = $(wildcard $(INC_DIR)/*.h)
 
 # ============================================================================
-# REGLAS PRINCIPALES
+# MAIN RULES
 # ============================================================================
 
-# Target por defecto: compilar todo
+# Default target: compile everything
 all: $(TARGET)
 
-# Crear ejecutable desde objetos
+# Create executable from objects
 $(TARGET): $(OBJS)
 	@echo "Linking $@..."
 	$(CC) $(OBJS) -o $@ $(LDFLAGS)
-	@echo "✓ Compilación exitosa: ./$(TARGET)"
+	@echo "Compilation successful: ./$(TARGET)"
 
-# Regla de patrón: compilar .c a .o
+# Pattern rule: compile .c to .o
 $(OBJ_DIR)/%.o: $(SRC_DIR)/%.c $(HEADERS) | $(OBJ_DIR)
 	@echo "Compiling $<..."
 	$(CC) $(CFLAGS) -c $< -o $@
 
-# Crear directorios si no existen
+# Create directories if they don't exist
 $(OBJ_DIR):
 	mkdir -p $(OBJ_DIR)
 
@@ -56,44 +56,44 @@ $(RESULTS_DIR):
 	mkdir -p $(RESULTS_DIR)
 
 # ============================================================================
-# UTILIDADES
+# UTILITIES
 #============================================================================
 
-# Limpiar archivos generados
+# Clean generated files
 clean:
 	@echo "Cleaning build files..."
 	rm -rf $(OBJ_DIR) $(TARGET)
-	@echo "✓ Clean complete"
+	@echo "Clean complete"
 
-# Limpiar todo incluyendo resultados
+# Clean everything including results
 clean-all: clean
 	@echo "Cleaning results..."
 	rm -rf $(RESULTS_DIR)
-	@echo "✓ Full clean complete"
+	@echo "Full clean complete"
 
-# Rebuild completo
+# Complete rebuild
 rebuild: clean all
 
-# Ejecutar con imagen de prueba
+# Run with test image
 run: all | $(RESULTS_DIR)
 	@echo "Running image processor..."
 	./$(TARGET)
 
-# Mostrar ayuda
+# Show help
 help:
-	@echo "Makefile para procesamiento de imágenes modular"
+	@echo "Makefile for modular image processing"
 	@echo ""
-	@echo "Targets disponibles:"
-	@echo "  make           - Compilar proyecto (target por defecto)"
-	@echo "  make all       - Compilar proyecto"
-	@echo "  make clean     - Eliminar archivos de compilación"
-	@echo "  make clean-all - Eliminar archivos de compilación y resultados"
-	@echo "  make rebuild   - Limpiar y recompilar todo"
-	@echo "  make run       - Compilar y ejecutar"
-	@echo "  make help      - Mostrar esta ayuda"
+	@echo "Available targets:"
+	@echo "  make           - Compile project (default target)"
+	@echo "  make all       - Compile project"
+	@echo "  make clean     - Remove compilation files"
+	@echo "  make clean-all - Remove compilation files and results"
+	@echo "  make rebuild   - Clean and recompile everything"
+	@echo "  make run       - Compile and execute"
+	@echo "  make help      - Show this help"
 	@echo ""
-	@echo "Uso del programa:"
-	@echo "  ./$(TARGET) [ruta_imagen.png]"
+	@echo "Program usage:"
+	@echo "  ./$(TARGET) [image_path.png]"
 
-# Evitar conflictos con archivos llamados 'clean', 'all', etc.
+# Avoid conflicts with files named 'clean', 'all', etc.
 .PHONY: all clean clean-all rebuild run help
