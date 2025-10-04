@@ -293,9 +293,6 @@ project/
 - POSIX threads documentation and community examples
 - Academic resources on parallel computing and image processing algorithms
 
-## Contact
-
-For questions, issues, or suggestions, please open an issue in the repository or contact the development team.
 
 ---
 
