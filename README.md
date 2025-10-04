@@ -1,10 +1,5 @@
 # Multithreaded Image Processing System
 
-[![Build](https://img.shields.io/badge/build-passing-brightgreen)]()
-[![Platform](https://img.shields.io/badge/platform-Linux-blue)]()
-[![License](https://img.shields.io/badge/license-MIT-green)]()
-[![Language](https://img.shields.io/badge/language-C-orange)]()
-
 A high-performance, multithreaded image processing framework implemented in C with POSIX threads. Features concurrent execution of various image filters and operations with configurable parallelization for optimal performance.
 
 ## Table of Contents
