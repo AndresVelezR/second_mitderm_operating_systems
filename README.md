@@ -13,8 +13,7 @@ A high-performance, multithreaded image processing framework implemented in C wi
 - [Performance](#performance)
 - [Technical Details](#technical-details)
 - [Project Structure](#project-structure)
-- [Contributing](#contributing)
-- [License](#license)
+
 
 ## Features
 
@@ -287,32 +286,6 @@ project/
 ├── Makefile              # Build configuration
 └── shark.png             # Sample test image
 ```
-
-## Contributing
-
-Contributions are welcome! Please follow these guidelines:
-
-1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/amazing-feature`)
-3. Follow the existing code style (K&R with 4-space indentation)
-4. Add comments in the WHY-HOW-WHAT format used throughout the codebase
-5. Test your changes thoroughly
-6. Commit with descriptive messages (`git commit -m 'feat: Add new filter'`)
-7. Push to your branch (`git push origin feature/amazing-feature`)
-8. Open a Pull Request
-
-### Code Style
-
-- Use descriptive variable names in Spanish (to match existing codebase)
-- Add structured comments explaining:
-  - **QUÉ** (WHAT): Purpose of the function/block
-  - **CÓMO** (HOW): Implementation approach
-  - **POR QUÉ** (WHY): Design rationale
-- Maintain modular structure with single-responsibility functions
-
-## License
-
-This project is licensed under the MIT License - see the LICENSE file for details.
 
 ## Acknowledgments
 
