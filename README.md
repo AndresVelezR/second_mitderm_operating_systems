@@ -146,9 +146,10 @@ Upon launch, you'll see the following options:
   5. Aplicar convolución Gaussiana (blur)
   6. Aplicar detector de bordes Sobel
   7. Rotar imagen (grados)
-  8. Configurar número de hilos (actual: 4)
-  9. Información del sistema
-  10. Salir
+  8. Escalar Imagen
+  9. Configurar número de hilos (actual: 4)
+  10. Información del sistema
+  11. Salir
 ```
 
 ### Example Workflow
@@ -364,14 +365,16 @@ project/
 │   ├── sobel.c            # Sobel edge detection
 │   ├── image_rotation.c   # Image rotation functionality
 │   ├── threading.c        # Threading utilities
-│   └── benchmark.c        # Performance testing
+│   ├── benchmark.c        # Performance testing
+    └── scaling.c          # Resize image
 ├── include/               # Header files
 │   ├── image_rotation.h
 │   ├── image.h
 │   ├── image_io.h
 │   ├── filters.h
 │   ├── threading.h
-│   └── benchmark.h
+│   ├── benchmark.h
+    └── scaling.h
 ├── stb/                   # Third-party libraries
 │   ├── stb_image.h
 │   └── stb_image_write.h
