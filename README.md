@@ -29,6 +29,8 @@ A high-performance, multithreaded image processing framework implemented in C wi
   - **Concurrent image rotation with bilinear interpolation**
 - **Automated Benchmarking**: Compare performance across different thread configurations
 - **Interactive CLI**: User-friendly menu-driven interface with comprehensive options
+- **Concurrent image scaling with bilinear interpolation**: (resize with subpixel accuracy)
+
 
 ### Advanced Features
 
@@ -155,12 +157,13 @@ Upon launch, you'll see the following options:
 ### Example Workflow
 
 1. **Load an image**: Select option `1` and provide the path to a PNG file
-2. **Configure threads**: Select option `8` to set thread count (e.g., 4 or 8)
+2. **Configure threads**: Select option `9` to set thread count (e.g., 4 or 8)
 3. **Apply filters**:
    - Brightness: Option `4` (e.g., +50 to brighten, -30 to darken)
    - Gaussian blur: Option `5` (kernel size: 5, sigma: 1.0)
    - Edge detection: Option `6`
    - **Image rotation**: Option `7` (e.g., 45 degrees for diagonal rotation)
+   - **Image scaling**: Option `8` (e.g., 736×1308 → 368×654 for a 0.5× downscale)
 4. **Save result**: Option `3` (saves to `results/` directory)
 5. **Run benchmark**: Option `0` to test performance with 1, 2, 4, 8 threads
 
@@ -203,7 +206,12 @@ make run
 - Comparative performance metrics and speedup calculations
 - System information display
 
-#### 6. `image_rotation.c/h` - Concurrent Image Rotation Module
+#### 6. `scaling.c/h` - Concurrent Image Scaling Module
+- Resizes images (upscaling or downscaling) using bilinear interpolation
+- Distributes row processing among multiple threads for concurrent execution
+- Ensures smooth and accurate results through inverse coordinate mapping
+
+#### 7. `image_rotation.c/h` - Concurrent Image Rotation Module
 
 **Implemented in** [`image_rotation.c`](project/src/image_rotation.c) **and** [`image_rotation.h`](project/include/image_rotation.h)
 
@@ -330,6 +338,16 @@ typedef struct {
    - Calculate weights: w1=(1-dx)(1-dy), w2=dx(1-dy), w3=(1-dx)dy, w4=dx·dy
    - Interpolate each channel independently: `value = Σ(pixel_i × weight_i)`
 6. **Boundary Handling**: Clamp source coordinates to valid image bounds
+
+#### Concurrent Image Scaling (Bilinear)
+
+- **Inverse mapping**: from destination to source avoids gaps and ensures coverage.
+- **Bilinear weights**:
+  - `dx = xs - floor(xs)`, `dy = ys - floor(ys)`
+  - `value = (1-dx)(1-dy)*TL + dx(1-dy)*TR + (1-dx)dy*BL + dx*dy*BR`
+- **Complexity**: `O(width*height*channels)`; memory-bound but scales well with row partitioning.
+- **Boundary handling**: Index clamping on `(x0, x1, y0, y1)` for safe reads at edges.
+
 
 **Mathematical Formulation:**
 
