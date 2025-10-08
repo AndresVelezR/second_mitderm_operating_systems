@@ -147,7 +147,23 @@ def main():
         ],
         test_name="TEST 4: Rotación de Imagen (90°) con 4 hilos"
     )
-    
+    # ========================================================================
+    # TEST 5: ESCALADO DE IMAGEN
+    # ========================================================================
+    run_command(
+        input_commands=[
+            "9",                    # Configurar hilos
+            "4",                    # 4 hilos
+            "8",                    # Escalar imagen
+            "5000",                 # Nuevo ancho (mitad de 3000)
+            "2000",                 # Nuevo alto (mitad de 4200)
+            "3",                    # Guardar imagen
+            "test5_scaling.png",    # Nombre del archivo de salida
+            "11"                    # Salir
+        ],
+        test_name="TEST 5: Escalado de Imagen (3000x4200 → 1500x2100) con 4 hilos"
+    )
+
     # ========================================================================
     # RESUMEN FINAL
     # ========================================================================
@@ -160,6 +176,7 @@ def main():
     print("  • test2_gaussian.png    - Blur Gaussiano (5x5, σ=1.5)")
     print("  • test3_sobel.png       - Detección de bordes")
     print("  • test4_rotation.png    - Rotación 45 grados")
+    print("  • test5_scaling.png     - Escalado de imagen (3000x4200 → 5000x2000)")
     print()
 
 
